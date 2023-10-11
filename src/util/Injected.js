@@ -57,9 +57,8 @@ exports.ExposeStore = (moduleRaidStr) => {
     window.Store.LidUtils = window.mR.findModule('getCurrentLid')[0];
     window.Store.WidToJid = window.mR.findModule('widToUserJid')[0];
     window.Store.JidToWid = window.mR.findModule('userJidToUserWid')[0];
-
+    
     /* eslint-disable no-undef, no-cond-assign */
-    window.Store.sendQueryMsgInfo = m = window.mR.findModule('sendQueryMsgInfo')[0] ? m.sendQueryMsgInfo : window.mR.findModule('queryMsgInfo')[0].queryMsgInfo;
     window.Store.QueryExist = ((m = window.mR.findModule('queryExists')[0]) ? m.queryExists : window.mR.findModule('queryExist')[0].queryWidExists);
     window.Store.ReplyUtils = (m = window.mR.findModule('canReplyMsg')).length > 0 && m[0];
     /* eslint-enable no-undef, no-cond-assign */
@@ -99,7 +98,7 @@ exports.ExposeStore = (moduleRaidStr) => {
             });
         };
     }
-
+    
     // eslint-disable-next-line no-undef
     (!(chat = window.Store.Chat).findImpl) && (chat.findImpl = chat._find);
 
