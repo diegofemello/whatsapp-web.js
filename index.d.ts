@@ -948,9 +948,9 @@ declare namespace WAWebJS {
         /** React to this message with an emoji*/
         react: (reaction: string) => Promise<void>,
         /** 
-         * Forwards this message to another chat (that you chatted before, otherwise it will fail)
+         * Forwards this message to another chat
          */
-        forward: (chat: Chat | string) => Promise<void>,
+        forward: (chat: Chat | string, options?: MessageForwardOptions) => Promise<void>,
         /** Star this message */
         star: () => Promise<void>,
         /** Unstar this message */
@@ -1095,6 +1095,20 @@ declare namespace WAWebJS {
         stickerAuthor?: string
         /** Sticker categories, if sendMediaAsSticker is true */
         stickerCategories?: string[]
+    }
+
+    /** Options for forwarding a message */
+    export interface MessageForwardOptions {
+        /**
+         * @default false
+         */
+        multicast?: boolean
+        /** 
+         * Adds caption text to forwarded message (if provided).
+         * Value is true by default.
+         * @default true
+         */
+        withCaption?: boolean
     }
 
     /** Options for editing a message */
