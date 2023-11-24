@@ -38,6 +38,12 @@ declare namespace WAWebJS {
         /** Creates a new group */
         createGroup(title: string, participants?: string | Contact | Contact[] | string[], options?: CreateGroupOptions): Promise<CreateGroupResult|string>
 
+        /** Creates a new community */
+        createCommunity(title: string, options: CreateCommunityOptions): Promise<CreateCommunityResult | string>
+
+        /** Deactivates the community */
+        deactivateCommunity: (parentGroupId: string) => Promise<boolean>;
+
         /** Closes the client */
         destroy(): Promise<void>
 
@@ -103,6 +109,20 @@ declare namespace WAWebJS {
 
         /** Get the registered WhatsApp ID for a number. Returns null if the number is not registered on WhatsApp. */
         getNumberId(number: string): Promise<ContactId | null>
+
+        /**
+         * Indicates if there are kept messages in that chat
+         * @see https://faq.whatsapp.com/728928448599090
+         * @param chatId ID of the chat to check for kept messages
+         */
+        hasKeptMessages: (chatId: string) => Promise<boolean>
+        
+        /**
+         * Gets kept messages from this chat, if any
+         * @see https://faq.whatsapp.com/728928448599090
+         * @param chatId ID of the chat to get kept messages from
+         */
+        getKeptMessages: (chatId: string) => Promise<Message[]|[]>
 
         /**
          * Mutes this chat forever, unless a date is specified
@@ -186,6 +206,14 @@ declare namespace WAWebJS {
         /** Rejects membership requests if any */
         rejectGroupMembershipRequests: (groupId: string, options: MembershipRequestActionOptions) => Promise<Array<MembershipRequestActionResult>>;
 
+        /**
+         * Gets the reported to group admin messages sent in that group
+         * Will work if:
+         * 1. The 'Report To Admin Mode' is turned on in the group
+         * 2. The current user is an admin of that group
+         */
+        getReportedMessages: (groupId: string) => Promise<ReportedMessage[]|[]>
+
         /** Generic event */
         on(event: string, listener: (...args: any) => void): this
 
@@ -218,7 +246,7 @@ declare namespace WAWebJS {
             reason: WAState | "NAVIGATION"
         ) => void): this
 
-        /** Emitted when a user joins the chat via invite link or is added by an admin */
+        /** Emitted when a user joins the chat via invite link, is added by an admin or the user's request to join the group was approved by one of the group admins */
         on(event: 'group_join', listener: (
             /** GroupNotification with more information about the action */
             notification: GroupNotification
@@ -230,7 +258,7 @@ declare namespace WAWebJS {
             notification: GroupNotification
         ) => void): this
 
-        /** Emitted when a current user is promoted to an admin or demoted to a regular user */
+        /** Emitted when a group member is promoted to an admin or demoted to a regular user */
         on(event: 'group_admin_changed', listener: (
             /** GroupNotification with more information about the action */
             notification: GroupNotification
@@ -291,6 +319,14 @@ declare namespace WAWebJS {
             newBody: String,
             /** Prev text message */
             prevBody: String
+        ) => void): this
+
+        /** Emitted when message was kept or unkept */
+        on(event: 'message_kept_unkept', listener: (
+            /** The message that was affected */
+            message: Message,
+            /** The message status: whether was kept or unkept */
+            status: String
         ) => void): this
         
         /** Emitted when a chat unread count changes */
@@ -365,6 +401,14 @@ declare namespace WAWebJS {
 
         /** Emitted when the RemoteAuth session is saved successfully on the external Database */
         on(event: 'remote_session_saved', listener: () => void): this
+
+        /**
+         * Emitted when some poll option is selected or deselected,
+         * shows a user's current selected option(s) on the poll
+         */
+        on(event: 'vote_update', listener: (
+            vote: PollVote
+        ) => void): this
     }
 
     /** Current connection information */
@@ -598,6 +642,8 @@ declare namespace WAWebJS {
                 isInviteV4Sent: boolean
             };
         };
+        /** The timestamp of a group creation */
+        createdAtTs: number
     }
 
     export interface GroupNotification {
@@ -652,6 +698,7 @@ declare namespace WAWebJS {
         MESSAGE_REVOKED_ME = 'message_revoke_me',
         MESSAGE_ACK = 'message_ack',
         MESSAGE_EDIT = 'message_edit',
+        MESSAGE_KEPT_UNKEPT = 'message_kept_unkept',
         MEDIA_UPLOADED = 'media_uploaded',
         CONTACT_CHANGED = 'contact_changed',
         GROUP_JOIN = 'group_join',
@@ -851,6 +898,15 @@ declare namespace WAWebJS {
         mediaKey?: string,
         /** Indicates the mentions in the message body. */
         mentionedIds: [],
+        /** Indicates whether there are group mentions in the message body */
+        groupMentions: {
+            groupSubject: string;
+            groupJid: {
+                server: string;
+                user: string;
+                _serialized: string;
+            };
+        }[],
         /** Unix timestamp for when the message was created */
         timestamp: number,
         /**
@@ -910,6 +966,8 @@ declare namespace WAWebJS {
         getContact: () => Promise<Contact>,
         /** Returns the Contacts mentioned in this message */
         getMentions: () => Promise<Contact[]>,
+        /** Returns groups mentioned in this message */
+        getGroupMentions: () => Promise<GroupChat[]|[]>,
         /** Returns the quoted message, if any */
         getQuotedMessage: () => Promise<Message>,
         /** 
@@ -921,9 +979,9 @@ declare namespace WAWebJS {
         /** React to this message with an emoji*/
         react: (reaction: string) => Promise<void>,
         /** 
-         * Forwards this message to another chat (that you chatted before, otherwise it will fail)
+         * Forwards this message to another chat
          */
-        forward: (chat: Chat | string) => Promise<void>,
+        forward: (chat: Chat | string, options?: MessageForwardOptions) => Promise<void>,
         /** Star this message */
         star: () => Promise<void>,
         /** Unstar this message */
@@ -944,6 +1002,24 @@ declare namespace WAWebJS {
         getReactions: () => Promise<ReactionList[]>,
         /** Edits the current message */
         edit: (content: MessageContent, options?: MessageEditOptions) => Promise<Message | null>,
+        /**
+         * If the 'Report To Admin Mode' is turned on in the group,
+         * you can report a message sent in the group to be reviewed by admins of that group
+         * @see https://faq.whatsapp.com/286279577291174
+         */
+        sendForAdminReview: () => Promise<boolean>,
+        /**
+         * If 'Message Exipiration Mode' is turned on in the chat,
+         * keeps messages in that chat to prevent them from disappearing
+         * @see https://faq.whatsapp.com/728928448599090
+         */
+        keepMessage: () => Promise<boolean>,
+        /**
+         * If 'Message Exipiration Mode' is turned on in the chat,
+         * unkeeps messages in that chat to prevent them from disappearing
+         * @see https://faq.whatsapp.com/728928448599090
+         */
+        unkeepMessage: () => Promise<boolean>
     }
 
     /** ID that represents a message */
@@ -994,6 +1070,34 @@ declare namespace WAWebJS {
         options: PollSendOptions
     }
 
+    /** Represents a Poll Vote on WhatsApp */
+    export interface PollVote {
+        /** The person who voted */
+        voter: string;
+
+        /**
+         * The selected poll option(s)
+         * If it's an empty array, the user hasn't selected any options on the poll,
+         * may occur when they deselected all poll options
+         */
+        selectedOptions: SelectedPollOption[];
+
+        /** Timestamp the option was selected or deselected at */
+        interractedAtTs: number;
+
+        /** The poll creation message associated with the poll vote */
+        parentMessage: Message;
+    }
+
+    /** Selected poll option structure */
+    export interface SelectedPollOption {
+        /** The local selected option ID */
+        id: number;
+
+        /** The option name */
+        name: string;
+    }
+
     export interface Label {
         /** Label name */
         name: string,
@@ -1040,6 +1144,20 @@ declare namespace WAWebJS {
         stickerAuthor?: string
         /** Sticker categories, if sendMediaAsSticker is true */
         stickerCategories?: string[]
+    }
+
+    /** Options for forwarding a message */
+    export interface MessageForwardOptions {
+        /**
+         * @default false
+         */
+        multicast?: boolean
+        /** 
+         * Adds caption text to forwarded message (if provided).
+         * Value is true by default.
+         * @default true
+         */
+        withCaption?: boolean
     }
 
     /** Options for editing a message */
@@ -1277,7 +1395,29 @@ declare namespace WAWebJS {
         /** Returns array of all Labels assigned to this Chat */
         getLabels: () => Promise<Label[]>,
         /** Add or remove labels to this Chat */
-        changeLabels: (labelIds: Array<string | number>) => Promise<void>
+        changeLabels: (labelIds: Array<string | number>) => Promise<void>,
+        /**
+         * Sets message expiration timer for the chat.
+         * Valid values for passing to the method are:
+         * 0 for message expiration removal,
+         * 1 for 24 hours message expiration,
+         * 2 for 7 days message expiration,
+         * 3 for 90 days message expiration
+         * @see https://faq.whatsapp.com/673193694148537
+         * @param {number} value The value to set the message expiration for
+         * @returns {Promise<boolean>} Returns true if the operation completed successfully, false otherwise
+         */
+        setMessageExpiration: (value: number) => Promise<boolean>,
+        /**
+         * Indicates if there are kept messages in that chat
+         * @see https://faq.whatsapp.com/728928448599090
+         */
+        hasKeptMessages: () => Promise<boolean>,
+        /**
+         * Gets kept messages from this chat, if any
+         * @see https://faq.whatsapp.com/728928448599090
+         */
+        getKeptMessages: () => Promise<Message[]|[]>
     }
 
     export interface MessageSearchOptions {
@@ -1400,6 +1540,19 @@ declare namespace WAWebJS {
         sleep: Array<number> | number | null;
     }
 
+    /** The result of {@link Client.getReportedMessages} */
+    export interface ReportedMessage {
+        reporters: Array<{
+            reporterId: {
+                server: string;
+                user: string;
+                _serialized: string;
+            };
+            reportedAt: number;
+        }>;
+        message: Message;
+    }
+
     export interface GroupChat extends Chat {
         /** Group owner */
         owner: ContactId;
@@ -1433,6 +1586,40 @@ declare namespace WAWebJS {
          */
         setInfoAdminsOnly: (adminsOnly?: boolean) => Promise<boolean>;
         /**
+         * Sets the 'Report To Admin Mode', if turned on, every group participant could
+         * report every message sent in the group, these reports will be sent to group admins for review,
+         * group admin could see those reports in 'Sent for admin review' section in the group
+         * @see https://faq.whatsapp.com/919039336073667
+         * @param {boolean} [value=true] True for turning the 'Report To Admin Mode' on, false fot turning it off
+         * @returns {Promise<boolean>} Returns true if the operation completed successfully, false otherwise
+         */
+        setReportToAdminMode: (value: boolean) => Promise<boolean>;
+        /**
+         * Sets the 'Membership Approval Mode', when turned on, admin must approve anyone who wants
+         * to join the group.
+         * Note: if the mode is turned off, all pending requests to join the group will be approved
+         * @see https://faq.whatsapp.com/1110600769849613
+         * @param {boolean} [value=true] True for turning the 'Membership Approval Mode' on, false fot turning it off
+         * @returns {Promise<boolean>} Returns true if the operation completed successfully, false otherwise
+         */
+        setMembershipApprovalMode: (value: boolean) => Promise<boolean>;
+        /**
+         * Sets the 'Group Member Add Mode'
+         * When turned on, only group admins can add others to the group,
+         * when turned off, all group participants can add others to the group.
+         * @param {boolean} [onlyAdmins=true] True for turning the 'Group Member Add Mode' on, false for turning it off
+         * @returns {Promise<boolean>} Returns true if the operation completed successfully, false otherwise
+         */
+        setGroupMemberAddMode: (onlyAdmins: boolean) => Promise<boolean>;
+        /**
+         * Gets the reported to group admin messages sent in that group
+         * Will work if:
+         * 1. The 'Report To Admin Mode' is turned on in the group
+         * 2. The current user is an admin of that group
+         * @returns {Promise<ReportedMessage[]|[]>}
+         */
+        getReportedMessages: () => Promise<ReportedMessage|[]>;
+        /**
          * Gets an array of membership requests
          * @returns {Promise<Array<GroupMembershipRequest>>} An array of membership requests
          */
@@ -1453,12 +1640,179 @@ declare namespace WAWebJS {
         getInviteCode: () => Promise<string>;
         /** Invalidates the current group invite code and generates a new one */
         revokeInvite: () => Promise<void>;
-        /** Makes the bot leave the group */
-        leave: () => Promise<void>;
+        /**
+         * Makes the bot leave the group or the community
+         * @note The community creator cannot leave it but can only deactivate the community instead
+         * @returns {Promise<boolean>} Returns true if the operation completed successfully, false otherwise
+         */
+        leave: () => Promise<boolean>;
         /** Sets the group's picture.*/
         setPicture: (media: MessageMedia) => Promise<boolean>;
         /** Deletes the group's picture */
         deletePicture: () => Promise<boolean>;
+    }
+
+    export interface Community extends GroupChat {
+        /** The community default subgroup (announcement group) */
+        defaultSubgroup: ChatId;
+
+        /** Gets all current community subgroups */
+        getSubgroups: () => Promise<Array<ChatId>>;
+
+        /**
+         * Gets the full list of community participants and updates the community groupMetadata
+         * @note To get the full result, you need to be a community admin. Otherwise, you will only get the participants that a regular community member can see
+         */
+        getParticipants: () => Promise<Array<GroupParticipant>>;
+
+        /** Promotes community participant/s */
+        promoteParticipants: (participantIds: string | Array<string>) => Promise<PromoteDemoteResult[] | []>;
+
+        /** Demotes community participant/s */
+        demoteParticipants: (participantIds: string | Array<string>) => Promise<PromoteDemoteResult[] | []>;
+
+        /** Allows or disallows for non admin community members to add groups to the community */
+        setNonAdminSubGroupCreation: (value: boolean) => Promise<boolean>;
+
+        /** Links a single subgroup or an array of subgroups to the community */
+        linkSubgroups: (subGroupIds: string | Array<string>) => Promise<LinkSubGroupsResult>;
+
+        /** Unlinks a single subgroup or an array of subgroups from the community */
+        unlinkSubgroups: (
+            subGroupIds: string | Array<string>,
+            options?: UnlinkSubGroupsOptions
+        ) => Promise<UnlinkSubGroupsResult>;
+
+        /**
+         * Removes participants from the community
+         * @note Provided participants will be also remove from all community subgroups
+         */
+        removeParticipants: (
+            participantIds: string | Array<string>,
+            options?: RemoveCommunityParticipantsOptions
+        ) => Promise<RemoveCommunityParticipantsResult | string>;
+
+        /** Deactivates the community */
+        deactivate: () => Promise<boolean>;
+    }
+
+    /** Options for community creation */
+    export interface CreateCommunityOptions {
+        /** The community description */
+        description?: string;
+        /** The single group ID or an array of group IDs to link to the created community */
+        subGroupIds?: string | Array<string>;
+        /**
+         * If true, admins must approve anyone who wants to join the group, false by default
+         * @see https://faq.whatsapp.com/1110600769849613
+         * @default false
+         */
+        membershipApprovalMode?: boolean;
+        /**
+         * If false, only community admins can add groups to that community,
+         * members can suggest groups for admin approval.
+         * If true, every community member can add groups to that community. False by default
+         * @see https://faq.whatsapp.com/205306122327447
+         * @default false
+         */
+        allowNonAdminSubGroupCreation?: boolean;
+    }
+
+    /** Unlink subgroups options */
+    export interface UnlinkSubGroupsOptions {
+        /**
+         * If true, the method will remove specified subgroups along with their members
+         * who are not part of any other subgroups within the community.
+         * @default false
+         */
+        removeOrphanMembers: boolean;
+    }
+
+    /** An object that handles options for removing participants */
+    export interface RemoveCommunityParticipantsOptions {
+        /**
+         * The number of milliseconds to wait before removing the next participant.
+         * If it is an array, a random sleep time between the sleep[0] and sleep[1] values will be added
+         * (the difference must be >=100 ms, otherwise, a random sleep time between sleep[1] and sleep[1] + 100
+         * will be added). If sleep is a number, a sleep time equal to its value will be added
+         * @default [250,500]
+         */
+        sleep?: Array<number>|number
+    }
+
+    /** An object that handles the result for {@link Client.createCommunity} method */
+    export interface CreateCommunityResult {
+        /** The community title */
+        title: string;
+        /** An object that handels the newly created community ID */
+        cid: ChatId;
+        /** An object that handles information about groups that were attempted to be linked to the community */
+        subGroupIds?: {
+            /** An array of group IDs that were successfully linked */
+            linkedGroupIds: string[];
+            /** An object that handles groups that failed to be linked to the community and an information about it */
+            failedGroups: {
+                /** The group ID, in a format of 'xxxxxxxxxx@g.us' */
+                groupId: string;
+                /** The code of an error */
+                error: number;
+                /** The message that describes an error */
+                message: string;
+            }[];
+        };
+        /** The timestamp of a community creation */
+        createdAtTs: number;
+    }
+
+    /** An object that handles the result for {@link Community.linkSubgroups} method */
+    export interface LinkSubGroupsResult {
+        /** An array of group IDs that were successfully linked */
+        linkedGroupIds: string[];
+        /** An array of objects that handles groups that failed to be linked to the community and an information about it */
+        failedGroups: {
+            /** The group ID, in a format of 'xxxxxxxxxx@g.us' */
+            groupId: string;
+            /** The code of an error */
+            code: number;
+            /** The message that describes an error */
+            message: string;
+        }[];
+    }
+
+    /** An object that handles the result for {@link Community.unlinkSubgroups} method */
+    export interface UnlinkSubGroupsResult {
+        /** An array of group IDs that were successfully unlinked */
+        unlinkedGroupIds: string[];
+        /** An array of objects that handles groups that failed to be unlinked from the community and an information about it */
+        failedGroups: {
+            /** The group ID, in a format of 'xxxxxxxxxx@g.us' */
+            groupId: string;
+            /** The code of an error */
+            code: number;
+            /** The message that describes an error */
+            message: string;
+        }[];
+    }
+
+    /**
+     * An object that handles the result for {@link Community.removeParticipants} method for the community
+     * or an error as a string
+     */
+    export interface RemoveCommunityParticipantsResult {
+        [participantId: string]: {
+            code: number;
+            message: string;
+        };
+    };
+
+    /**
+     * An object that handles the result for
+     * {@link Community.promoteParticipants} and {@link Community.demoteParticipants} methods
+     */
+    export interface PromoteDemoteResult {
+        id: ContactId;
+        code: number;
+        message: string;
     }
 
     /**

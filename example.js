@@ -5,7 +5,7 @@ const client = new Client({
     // proxyAuthentication: { username: 'username', password: 'password' },
     puppeteer: { 
         // args: ['--proxy-server=proxy-server-that-requires-authentication.example.com'],
-        headless: false
+        headless: true,
     }
 });
 
@@ -75,13 +75,114 @@ client.on('message', async msg => {
         } else {
             msg.reply('This command can only be used in a group!');
         }
+    } else if (msg.body === '!memberAddMode') {
+        const community = await client.getChatById('communityId@g.us');
+        if (community.isCommunity) {
+            /** Allows all community members to add groups to the community: */
+            await community.setNonAdminSubGroupCreation(true);
+            /** Allows only community admins to add groups to the community: */
+            await community.setNonAdminSubGroupCreation(false);
+        }
+    } else if (msg.body === '!setMsgTimer') {
+        const chat = await client.getChatById('number@c.us');
+        // OR
+        const group = await client.getChatById('groupId@g.us');
+        /**
+         * Valid values for passing to the method are:
+         * 0 for message expiration removal,
+         * 1 for 24 hours message expiration,
+         * 2 for 7 days message expiration,
+         * 3 for 90 days message expiration
+         */
+        /** For 24 hours message expiration: */
+        await chat.setMessageExpiration(1);
+        /** For 90 days message expiration: */
+        await group.setMessageExpiration(3);
+    } else if (msg.body === '!reportToAdminMode') {
+        const group = await client.getChatById('groupId@g.us');
+        if (group.isGroup) {
+            /** Turns the 'Report To Admin Mode' on: */
+            await group.setReportToAdminMode(/* true */);
+            /** Turns the 'Report To Admin Mode' off: */
+            await group.setReportToAdminMode(false);
+        }
+    } else if (msg.body === '!membershipApprovalMode') {
+        const group = await client.getChatById('groupId@g.us');
+        if (group.isGroup) {
+            /** Turns the 'Membership Approval Mode' on: */
+            await group.setMembershipApprovalMode(/* true */);
+            /**
+             * Turns the 'Membership Approval Mode' off
+             * Note: if the mode is turned off, all pending requests to join the group will be approved
+             */
+            await group.setMembershipApprovalMode(false);
+        }
+    } else if (msg.body === '!groupMemberAddMode') {
+        const group = await client.getChatById('groupId@g.us');
+        if (group.isGroup) {
+            /**
+             * Turns the 'Group Member Add Mode' on.
+             * If turned on, only group admins can add others to that group
+             */
+            await group.setGroupMemberAddMode(/* true */);
+            /**
+             * Turns the 'Group Member Add Mode' off
+             * If turned off, all participants can add others to this group
+             */
+            await group.setGroupMemberAddMode(false);
+        }
+    }else if (msg.body === '!getReportedMsgs') {
+        let reportedMsgs;
+        const group = await msg.getChat();
+        if (group.isGroup) {
+            reportedMsgs = await group.getReportedMessages();
+        }
+        // You can also call that method on `Client` object:
+        reportedMsgs = await client.getReportedMessages('groupId@g.us');
+        /**
+         * The example of the resulting structure of {@link reportedMsgs}:
+         * [
+         *   {
+         *     reporters: [
+         *       {
+         *         reporterId: {
+         *           server: 'c.us',
+         *           user: 'XXXXXXXXXX',
+         *           _serialized: 'XXXXXXXXXX@c.us'
+         *         },
+         *         reportedAt: 1645XXXXXX
+         *       },
+         *       ...
+         *     ],
+         *     message: Message {...}
+         *   },
+         *   ...
+         * ]
+         */
+        console.log(reportedMsgs);
+    } else if (msg.body === '!hasKeptMsgs') {
+        let hasKeptMsgs;
+        const chat = await msg.getChat();
+        hasKeptMsgs = await chat.hasKeptMessages();
+        // You can also call that method on `Client` object:
+        hasKeptMsgs = await client.hasKeptMessages('number@c.us'/* 'groupId@g.us' */);
+        /** True if there are kept messages in a chat or a group, false otherwise */
+        console.log(hasKeptMsgs);
+    } else if (msg.body === '!getKeptMsgs') {
+        let keptMsgs;
+        const chat = await msg.getChat();
+        keptMsgs = await chat.getKeptMessages();
+        // You can also call that method on `Client` object:
+        keptMsgs = await client.getKeptMessages('number@c.us'/* 'groupId@g.us' */);
+        /** An array of `Message` objects */
+        console.log(keptMsgs);
     } else if (msg.body === '!leave') {
-        // Leave the group
+        // Leave the group/community announcement group
         let chat = await msg.getChat();
-        if (chat.isGroup) {
-            chat.leave();
+        if (chat.isGroup || chat.isCommunity) {
+            await chat.leave();
         } else {
-            msg.reply('This command can only be used in a group!');
+            msg.reply('This command can only be used in a group or a community!');
         }
     } else if (msg.body.startsWith('!join ')) {
         const inviteCode = msg.body.split(' ')[1];
@@ -156,7 +257,8 @@ client.on('message', async msg => {
          *       isGroupCreator: false,
          *       isInviteV4Sent: false
          *     }
-         *   }
+         *   },
+         *   createdAtTs: timestamp
          * }
          *
          * For more usage examples:
@@ -177,6 +279,118 @@ client.on('message', async msg => {
         } else {
             msg.reply('This command can only be used in a group!');
         }
+    } else if (msg.body === '!createcommunity') {
+        let createdCommunity;
+        createdCommunity = await client.createCommunity('CommunityName');
+        /**
+         * The example of the {@link createdCommunity}:
+         * {
+         *   title: 'CommunityName',
+         *   cid: {
+         *     server: 'g.us',
+         *     user: 'ZZZZZZZZZZ',
+         *     _serialized: 'ZZZZZZZZZZ@g.us'
+         *   },
+         *   createdAtTs: timestamp
+         * }
+         */
+        console.log(createdCommunity);
+
+        // You can also provide optional parametes:
+        createdCommunity = await client.createCommunity('CommunityName', {
+            description: 'Description',
+            subGroupIds: ['groupId1@g.us', 'groupId2@g.us', 'groupId3@g.us'], // group IDs to link to the community
+            membershipApprovalMode: true, // false by default
+            allowNonAdminSubGroupCreation: true // false by default
+        });
+    } else if (msg.body === '!linksubgroups') {
+        const community = await client.getChatById('communityId@g.us');
+        /**
+         * The example output of the method execution:
+         * {
+         *   linkedGroupIds: [ 'groupId1@g.us' ],
+         *   failedGroups: [
+         *     {
+         *       groupId: 'groupId2@g.us',
+         *       code: 409,
+         *       message: 'SubGroupConflictError'
+         *     },
+         *     {
+         *       groupId: 'groupId3@g.us',
+         *       code: 403,
+         *       message: 'SubGroupForbiddenError'
+         *     }
+         *   ]
+         * }
+         */
+        console.log(await community.linkSubgroups(['groupId1@g.us', 'groupId2@g.us', 'groupId3@g.us']));
+    } else if (msg.body === '!unlinksubgroups') {
+        const community = await client.getChatById('communityId@g.us');
+        /**
+         * The example output of the unlinking result is as the linking one
+         * but also you can provide an optional parameter 'removeOrphanMembers':
+         */
+        console.log(
+            await community.unlinkSubgroups(
+                ['groupId1@g.us', 'groupId2@g.us', 'groupId3@g.us'],
+                { removeOrphanMembers: true } // false by default
+            )
+        );
+    } else if (msg.body === '!getsubgroups') {
+        const community = await client.getChatById('communityId@g.us');
+        if (community.isCommunity) {
+            const subGroups = await community.getSubgroups();
+            /**
+             * The example of {@link subGroups}:
+             * [
+             *   {
+             *     server: 'g.us',
+             *     user: 'XXXXXXXXXX',
+             *     _serialized: 'XXXXXXXXXX@g.us'
+             *   },
+             *   {
+             *     server: 'g.us',
+             *     user: 'YYYYYYYYYY',
+             *     _serialized: 'YYYYYYYYYY@g.us'
+             *   },
+             *   ...
+             * ]
+             */
+            console.log(subGroups);
+        }
+    } else if (msg.body === '!communitymembers') {
+        const community = await client.getChatById('communityId@g.us');
+        if (community.isCommunity) {
+            const members = await community.getParticipants();
+            /**
+             * The example of {@link members}:
+             * [
+             *   {
+             *     id: {
+             *       server: 'c.us',
+             *       user: 'XXXXXXXXXX',
+             *       _serialized: 'XXXXXXXXXX@c.us'
+             *     },
+             *     isAdmin: false,
+             *     isSuperAdmin: false
+             *   },
+             *   {
+             *     id: {
+             *       server: 'c.us',
+             *       user: 'YYYYYYYYYY',
+             *       _serialized: 'YYYYYYYYYY@c.us'
+             *     },
+             *     isAdmin: true,
+             *     isSuperAdmin: false
+             *   },
+             *   ...
+             * ]
+             */
+            console.log(members);
+        }
+    } else if (msg.body === '!deactivatecommunity') {
+        const community = await client.getChatById('communityId@g.us');
+        await community.deactivate();
     } else if (msg.body === '!chats') {
         const chats = await client.getChats();
         client.sendMessage(msg.from, `The bot has ${chats.length} chats open.`);
@@ -237,12 +451,52 @@ client.on('message', async msg => {
         const newStatus = msg.body.split(' ')[1];
         await client.setStatus(newStatus);
         msg.reply(`Status was updated to *${newStatus}*`);
-    } else if (msg.body === '!mention') {
-        const contact = await msg.getContact();
+    } else if (msg.body === '!mentionUsers') {
         const chat = await msg.getChat();
-        chat.sendMessage(`Hi @${contact.number}!`, {
-            mentions: [contact]
+        const userNumber = 'XXXXXXXXXX';
+        /**
+         * To mention one user you can pass user's ID to 'mentions' property as is,
+         * without wrapping it in Array, and a user's phone number to the message body:
+         */
+        await chat.sendMessage(`Hi @${userNumber}`, {
+            mentions: userNumber + '@c.us'
         });
+        // To mention a list of users:
+        await chat.sendMessage(`Hi @${userNumber}, @${userNumber}`, {
+            mentions: [userNumber + '@c.us', userNumber + '@c.us']
+        });
+    } else if (msg.body === '!mentionGroups') {
+        const chat = await msg.getChat();
+        const groupId = 'YYYYYYYYYY@g.us';
+        /**
+         * Sends clickable group mentions, the same as user mentions.
+         * When the mentions are clicked, it opens a chat with the mentioned group.
+         * The 'groupMentions.subject' can be custom
+         * 
+         * @note The user that does not participate in the mentioned group,
+         * will not be able to click on that mentioned group, the same if the group does not exist
+         *
+         * To mention one group:
+         */
+        await chat.sendMessage(`Check the last message here: @${groupId}`, {
+            groupMentions: { subject: 'GroupSubject', id: groupId }
+        });
+        // To mention a list of groups:
+        await chat.sendMessage(`Check the last message in these groups: @${groupId}, @${groupId}`, {
+            groupMentions: [
+                { subject: 'FirstGroup', id: groupId },
+                { subject: 'SecondGroup', id: groupId }
+            ]
+        });
+    } else if (msg.body === '!getGroupMentions') {
+        // To get group mentions from a message:
+        const groupId = 'ZZZZZZZZZZ@g.us';
+        const msg = await client.sendMessage('chatId', `Check the last message here: @${groupId}`, {
+            groupMentions: { subject: 'GroupSubject', id: groupId }
+        });
+        /** {@link groupMentions} is an array of `GroupChat` */
+        const groupMentions = await msg.getGroupMentions();
+        console.log(groupMentions);
     } else if (msg.body === '!delete') {
         if (msg.hasQuotedMsg) {
             const quotedMsg = await msg.getQuotedMessage();
@@ -285,7 +539,9 @@ client.on('message', async msg => {
         let button = new Buttons('Button body', [{ body: 'bt1' }, { body: 'bt2' }, { body: 'bt3' }], 'title', 'footer');
         client.sendMessage(msg.from, button);
     } else if (msg.body === '!list') {
-        let sections = [{ title: 'sectionTitle', rows: [{ title: 'ListItem1', description: 'desc' }, { title: 'ListItem2' }] }];
+        let sections = [
+            { title: 'sectionTitle', rows: [{ title: 'ListItem1', description: 'desc' }, { title: 'ListItem2' }] }
+        ];
         let list = new List('List body', 'btnText', sections, 'Title', 'footer');
         client.sendMessage(msg.from, list);
     } else if (msg.body === '!reaction') {
@@ -320,7 +576,7 @@ client.on('message', async msg => {
         await chat.changeLabels([0, 1]);
     } else if (msg.body === '!addlabels') {
         const chat = await msg.getChat();
-        let labels = (await chat.getLabels()).map(l => l.id);
+        let labels = (await chat.getLabels()).map((l) => l.id);
         labels.push('0');
         labels.push('1');
         await chat.changeLabels(labels);
@@ -373,7 +629,37 @@ client.on('message', async msg => {
             requesterIds: ['number1@c.us', 'number2@c.us'],
             sleep: null
         });
+    } else if (msg.author) {
+        /**
+         * Note:
+         * In order to avoid unexpected behaviour while forwarding media and attachment messages
+         * you have to use Chrome instead of Chromium by adding @property {executablePath}
+         * @see https://github.com/pedroslopez/whatsapp-web.js/pull/2272
+         * @see https://pptr.dev/api/puppeteer.configuration
+         * 
+         * Let's say the message was sent in a group
+         * and you want to forward it to its author:
+         * 
+         * 1. By default it will be forwarded with a caption text (if provided):
+         */
+        await msg.forward(msg.author);
+
+        /**
+         * 2. To forward without a caption text use @property {withCaption: false}:
+         */
+        await msg.forward(msg.author, { withCaption: false });
+    }else {
+        /** If you want to send that message to group admins review: */
+        console.log(await msg.sendForAdminReview());
+
+        /** If you want to keep that message: */
+        const ifKept = await msg.keepMessage();
+        /** True if the operation completed successfully, false otherwise */
+        console.log(ifKept);
+        /** In order to unkeep that message: */
+        await msg.unkeepMessage();
     }
+    
 });
 
 client.on('message_create', (msg) => {
@@ -485,14 +771,11 @@ client.on('contact_changed', async (message, oldId, newId, isContact) => {
 
 client.on('group_admin_changed', (notification) => {
     if (notification.type === 'promote') {
-        /** 
-          * Emitted when a current user is promoted to an admin.
-          * {@link notification.author} is a user who performs the action of promoting/demoting the current user.
-          */
-        console.log(`You were promoted by ${notification.author}`);
+        // Emitted when a group member is promoted to an admin
+        console.log(`The user ${notification.recipientIds[0]} was promoted by ${notification.author || 'the server'}`);
     } else if (notification.type === 'demote')
-        /** Emitted when a current user is demoted to a regular user. */
-        console.log(`You were demoted by ${notification.author}`);
+        // Emitted when a group member is demoted to a regular user
+        console.log(`The user ${notification.recipientIds[0]} was demoted by ${notification.author || 'the server'}`);
 });
 
 client.on('group_membership_request', async (notification) => {
@@ -519,4 +802,15 @@ client.on('group_membership_request', async (notification) => {
     /** You can approve or reject the newly appeared membership request: */
     await client.approveGroupMembershipRequestss(notification.chatId, notification.author);
     await client.rejectGroupMembershipRequests(notification.chatId, notification.author);
+});
+
+client.on('vote_update', (vote) => {
+    /** The vote that was affected: */
+    console.log(vote);
+});
+client.on('message_kept_unkept', (msg, status) => {
+    /** The message that was affected */
+    console.log(msg);
+    /** The message status: whether was kept or unkept */
+    console.log(status);
 });

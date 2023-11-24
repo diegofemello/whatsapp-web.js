@@ -197,6 +197,17 @@ class Message extends Base {
         }
 
         /**
+         * Indicates whether there are group mentions in the message body
+         * @type {Object[]}
+         * @property {string} groupSubject The name  of the group
+         * @property {object} groupJid The group ID
+         * @property {string} groupJid.server
+         * @property {string} groupJid.user
+         * @property {string} groupJid._serialized
+         */
+        this.groupMentions = data.groupMentions || [];
+
+        /**
          * Order ID for message type ORDER
          * @type {string}
          */
@@ -277,12 +288,14 @@ class Message extends Base {
             this.allowMultipleAnswers = Boolean(!data.pollSelectableOptionsCount);
             this.pollInvalidated = data.pollInvalidated;
             this.isSentCagPollCreation = data.isSentCagPollCreation;
+            this.messageSecret = Object.keys(data.messageSecret).map((key) =>  data.messageSecret[key]);
 
             delete this._data.pollName;
             delete this._data.pollOptions;
             delete this._data.pollSelectableOptionsCount;
             delete this._data.pollInvalidated;
             delete this._data.isSentCagPollCreation;
+            delete this._data.messageSecret;
         }
 
         return super._patch(data);
@@ -341,6 +354,14 @@ class Message extends Base {
     async getMentions() {
         return await Promise.all(this.mentionedIds.map(async m => await this.client.getContactById(m)));
     }
+    
+    /**
+     * Returns groups mentioned in this message
+     * @returns {Promise<GroupChat[]|[]>}
+     */
+    async getGroupMentions() {
+        return await Promise.all(this.groupMentions.map(async (m) => await this.client.getChatById(m.groupJid._serialized)));
+    }
 
     /**
      * Returns the quoted message, if any
@@ -378,7 +399,7 @@ class Message extends Base {
             quotedMessageId: this.id._serialized
         };
 
-        return this.client.sendMessage(chatId, content, options);
+        return await this.client.sendMessage(chatId, content, options);
     }
 
     /**
@@ -402,22 +423,38 @@ class Message extends Base {
     async acceptGroupV4Invite() {
         return await this.client.acceptGroupV4Invite(this.inviteV4);
     }
+    
+    /**
+     * Forward options:
+     * 
+     * @typedef {Object} MessageForwardOptions
+     * @property {boolean} [multicast=false]
+     * @property {boolean} [withCaption=true] Forwards this message with the caption text of the original message if provided.
+     */
 
     /**
-     * Forwards this message to another chat (that you chatted before, otherwise it will fail)
+     * Forwards this message to another chat
      *
+     * @note In order to avoid unexpected behaviour while forwarding media and attachment messages you have to use Chrome instead of Chromium
      * @param {string|Chat} chat Chat model or chat ID to which the message will be forwarded
+     * @param {MessageForwardOptions} [options] Options used when forwarding the message
      * @returns {Promise}
      */
-    async forward(chat) {
+    async forward(chat, options = {}) {
         const chatId = typeof chat === 'string' ? chat : chat.id._serialized;
 
-        await this.client.pupPage.evaluate(async (msgId, chatId) => {
-            let msg = window.Store.Msg.get(msgId);
-            let chat = window.Store.Chat.get(chatId);
+        const forwardOptions = {
+            multicast: options.multicast || false,
+            withCaption: options.withCaption === false ? false : true
+        };
 
-            return await chat.forwardMessages([msg]);
-        }, this.id._serialized, chatId);
+        await this.client.pupPage.evaluate(async (chatId, msgId, options) => {
+            const chatWid = window.Store.WidFactory.createWid(chatId);
+            const chat = await window.Store.Chat.find(chatWid);
+            const message = window.Store.Msg.get(msgId);
+            
+            return await window.WWebJS.forwardMessage(chat, message, options);
+        }, chatId, this.id._serialized, forwardOptions);
     }
 
     /**
@@ -431,7 +468,7 @@ class Message extends Base {
 
         const result = await this.client.pupPage.evaluate(async (msgId) => {
             const msg = window.Store.Msg.get(msgId);
-            if (!msg) {
+            if (!msg?.mediaData) {
                 return undefined;
             }
             if (msg.mediaData.mediaStage != 'RESOLVED') {
@@ -628,12 +665,20 @@ class Message extends Base {
      * @returns {Promise<?Message>}
      */
     async edit(content, options = {}) {
-        if (options.mentions && options.mentions.some(possiblyContact => possiblyContact instanceof Contact)) {
-            options.mentions = options.mentions.map(a => a.id._serialized);
+        if (options.mentions) {
+            !Array.isArray(options.mentions) && (options.mentions = [options.mentions]);
+            if (options.mentions.some((possiblyContact) => possiblyContact instanceof Contact)) {
+                console.warn('Mentions with an array of Contact are now deprecated. See more at https://github.com/pedroslopez/whatsapp-web.js/pull/2166.');
+                options.mentions = options.mentions.map((a) => a.id._serialized);
+            }
         }
+
+        options.groupMentions && !Array.isArray(options.groupMentions) && (options.groupMentions = [options.groupMentions]);
+
         let internalOptions = {
             linkPreview: options.linkPreview === false ? undefined : true,
-            mentionedJidList: Array.isArray(options.mentions) ? options.mentions : [],
+            mentionedJidList: options.mentions || [],
+            groupMentions: options.groupMentions,
             extraOptions: options.extra
         };
         
@@ -655,6 +700,58 @@ class Message extends Base {
             return new Message(this.client, messageEdit);
         }
         return null;
+    }
+
+    /**
+     * If the 'Report To Admin Mode' is turned on in the group,
+     * you can report a message sent in the group to be reviewed by admins of that group
+     * @see https://faq.whatsapp.com/286279577291174
+     * @returns {Promise<boolean>} Returns true if the operation completed successfully, false otherwise
+     */
+    async sendForAdminReview() {
+        return await this.client.pupPage.evaluate(
+            async (msgId, groupId) => {
+                const msg = window.Store.Msg.get(msgId);
+                if (!msg || msg.fromMe) return false;
+                const groupWid = window.Store.WidFactory.createWid(groupId);
+                try {
+                    await window.Store.GroupUtils.sendForAdminReview(
+                        msg,
+                        groupWid
+                    );
+                    return true;
+                } catch (err) {
+                    if (err.name === 'ServerStatusCodeError') return false;
+                    throw err;
+                }
+            },
+            this.id._serialized,
+            this.id.remote
+        );
+    }
+
+    /**
+     * If 'Message Exipiration Mode' is turned on in the chat,
+     * keeps messages in that chat to prevent them from disappearing
+     * @see https://faq.whatsapp.com/728928448599090
+     * @returns {Promise<boolean>} Returns true if the operation completed successfully, false otherwise
+     */
+    async keepMessage() {
+        return await this.client.pupPage.evaluate(async (msgId) => {
+            return await window.WWebJS.keepUnkeepMessage(msgId, 'Keep');
+        }, this.id._serialized);
+    }
+
+    /**
+     * If 'Message Exipiration Mode' is turned on in the chat,
+     * unkeeps messages in that chat to prevent them from disappearing
+     * @see https://faq.whatsapp.com/728928448599090
+     * @returns {Promise<boolean>} Returns true if the operation completed successfully, false otherwise
+     */
+    async unkeepMessage(options = {}) {
+        return await this.client.pupPage.evaluate(async (msgId, options) => {
+            return await window.WWebJS.keepUnkeepMessage(msgId, 'Unkeep', options);
+        }, this.id._serialized, options);
     }
 }
 

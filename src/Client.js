@@ -11,7 +11,7 @@ const { ExposeStore, LoadUtils } = require('./util/Injected');
 const ChatFactory = require('./factories/ChatFactory');
 const ContactFactory = require('./factories/ContactFactory');
 const WebCacheFactory = require('./webCache/WebCacheFactory');
-const { ClientInfo, Message, MessageMedia, Contact, Location, Poll, GroupNotification, Label, Call, Buttons, List, Reaction } = require('./structures');
+const { ClientInfo, Message, MessageMedia, Contact, Location, Poll, PollVote, GroupNotification, Label, Call, Buttons, List, Reaction } = require('./structures');
 const LegacySessionAuth = require('./authStrategies/LegacySessionAuth');
 const NoAuth = require('./authStrategies/NoAuth');
 
@@ -52,6 +52,8 @@ const NoAuth = require('./authStrategies/NoAuth');
  * @fires Client#contact_changed
  * @fires Client#group_admin_changed
  * @fires Client#group_membership_request
+ * @fires Client#vote_update
+ * @fires Client#message_kept_unkept
  */
 class Client extends EventEmitter {
     constructor(options = {}) {
@@ -359,9 +361,10 @@ class Client extends EventEmitter {
         await page.exposeFunction('onAddMessageEvent', msg => {
             if (msg.type === 'gp2') {
                 const notification = new GroupNotification(this, msg);
-                if (['add', 'invite', 'linked_group_join'].includes(msg.subtype)) {
+                if (['add', 'invite', 'linked_group_join', 'v4_add_invite_join'].includes(msg.subtype)) {
                     /**
-                     * Emitted when a user joins the chat via invite link or is added by an admin.
+                     * Emitted when a user joins the chat via invite link, is added by an admin or
+                     * the user's request to join the group was approved by one of the group admins
                      * @event Client#group_join
                      * @param {GroupNotification} notification GroupNotification with more information about the action
                      */
@@ -373,11 +376,14 @@ class Client extends EventEmitter {
                      * @param {GroupNotification} notification GroupNotification with more information about the action
                      */
                     this.emit(Events.GROUP_LEAVE, notification);
-                } else if (msg.subtype === 'promote' || msg.subtype === 'demote') {
+                } else if (['promote', 'demote', 'linked_group_promote', 'linked_group_demote'].includes(msg.subtype)) {
                     /**
-                     * Emitted when a current user is promoted to an admin or demoted to a regular user.
+                     * Emitted when a group member is promoted to an admin or demoted to a regular user
                      * @event Client#group_admin_changed
                      * @param {GroupNotification} notification GroupNotification with more information about the action
+                     * 
+                     * {@link notification.author} is a user ID who promotes/demotes
+                     * {@link notification.recipientIds[0]} is a user ID who was promoted/demoted
                      */
                     this.emit(Events.GROUP_ADMIN_CHANGED, notification);
                 } else if (msg.subtype === 'created_membership_requests') {
@@ -659,9 +665,30 @@ class Client extends EventEmitter {
             this.emit(Events.MESSAGE_EDIT, new Message(this, msg), newBody, prevBody);
         });
 
+        await page.exposeFunction('onPollVoteEvent', (vote) => {
+            const _vote = new PollVote(this, vote);
+            /**
+             * Emitted when some poll option is selected or deselected,
+             * shows a user's current selected option(s) on the poll
+             * @event Client#vote_update
+             */
+            this.emit(Events.VOTE_UPDATE, _vote);
+        });
+        
+        await page.exposeFunction('onKeptUnkeptMessageEvent', (msg, status) => {
+            /**
+             * Emitted when message was kept or unkept
+             * @event Client#message_kept_unkept
+             * @param {Message} message The message that was affected
+             * @param {string} status The message status: whether was kept or unkept
+             */
+            this.emit(Events.MESSAGE_KEPT_UNKEPT, new Message(this, msg), status);
+        });
+
         await page.evaluate(() => {
             window.Store.Msg.on('change', (msg) => { window.onChangeMessageEvent(window.WWebJS.getMessageModel(msg)); });
             window.Store.Msg.on('change:type', (msg) => { window.onChangeMessageTypeEvent(window.WWebJS.getMessageModel(msg)); });
+            window.Store.Msg.on('change:kicState', (msg, status) => { window.onKeptUnkeptMessageEvent(window.WWebJS.getMessageModel(msg), status); });
             window.Store.Msg.on('change:ack', (msg, ack) => { window.onMessageAckEvent(window.WWebJS.getMessageModel(msg), ack); });
             window.Store.Msg.on('change:isUnsentMedia', (msg, unsent) => { if (msg.id.fromMe && !unsent) window.onMessageMediaUploadedEvent(window.WWebJS.getMessageModel(msg)); });
             window.Store.Msg.on('remove', (msg) => { if (msg.isNewMsg) window.onRemoveMessageEvent(window.WWebJS.getMessageModel(msg)); });
@@ -683,6 +710,10 @@ class Client extends EventEmitter {
                 }
             });
             window.Store.Chat.on('change:unreadCount', (chat) => {window.onChatUnreadCountEvent(chat);});
+            window.Store.PollVote.on('add', (vote) => {
+                const pollVoteModel = window.WWebJS.getPollVoteModel(vote);
+                pollVoteModel && window.onPollVoteEvent(pollVoteModel);
+            });
 
             {
                 const module = window.Store.createOrUpdateReactionsModule;
@@ -827,10 +858,16 @@ class Client extends EventEmitter {
      * @returns {Promise<Message>} Message that was just sent
      */
     async sendMessage(chatId, content, options = {}) {
-        if (options.mentions && options.mentions.some(possiblyContact => possiblyContact instanceof Contact)) {
-            console.warn('Mentions with an array of Contact are now deprecated. See more at https://github.com/pedroslopez/whatsapp-web.js/pull/2166.');
-            options.mentions = options.mentions.map(a => a.id._serialized);
+        if (options.mentions) {
+            !Array.isArray(options.mentions) && (options.mentions = [options.mentions]);
+            if (options.mentions.some((possiblyContact) => possiblyContact instanceof Contact)) {
+                console.warn('Mentions with an array of Contact are now deprecated. See more at https://github.com/pedroslopez/whatsapp-web.js/pull/2166.');
+                options.mentions = options.mentions.map((a) => a.id._serialized);
+            }
         }
+
+        options.groupMentions && !Array.isArray(options.groupMentions) && (options.groupMentions = [options.groupMentions]);
+
         let internalOptions = {
             linkPreview: options.linkPreview === false ? undefined : true,
             sendAudioAsVoice: options.sendAudioAsVoice,
@@ -840,7 +877,8 @@ class Client extends EventEmitter {
             caption: options.caption,
             quotedMessageId: options.quotedMessageId,
             parseVCards: options.parseVCards === false ? false : true,
-            mentionedJidList: Array.isArray(options.mentions) ? options.mentions : [],
+            mentionedJidList: options.mentions || [],
+            groupMentions: options.groupMentions,
             extraOptions: options.extra
         };
 
@@ -1316,6 +1354,7 @@ class Client extends EventEmitter {
      * @property {string} gid.user
      * @property {string} gid._serialized
      * @property {Object.<string, ParticipantResult>} participants An object that handles the result value for each added to the group participant
+     * @property {number} createdAtTs The timestamp of a group creation
      */
 
     /**
@@ -1407,8 +1446,102 @@ class Client extends EventEmitter {
                 };
             }
 
-            return { title: title, gid: createGroupResult.wid, participants: participantData };
+            return {
+                title: title,
+                gid: createGroupResult.wid, participants: participantData,
+                createdAtTs: createGroupResult.ts
+            };
         }, title, participants, options);
+    }
+
+    /**
+     * An object that handles the result for {@link createCommunity} method
+     * @typedef {Object} CreateCommunityResult
+     * @property {string} title The community title
+     * @property {ChatId} cid An object that handels the newly created community ID
+     * @property {string} cid.server
+     * @property {string} cid.user
+     * @property {string} cid._serialized
+     * @property {Object} subGroupIds An object that handles information about groups that were attempted to be linked to the community
+     * @property {Array<string>} subGroupIds.linkedGroupIds An array of group IDs that were successfully linked
+     * @property {Array<Object>} subGroupIds.failedGroups An object that handles groups that failed to be linked to the community and an information about it
+     * @property {string} subGroupIds.failedGroups[].groupId The group ID, in a format of 'xxxxxxxxxx@g.us'
+     * @property {number} subGroupIds.failedGroups[].error The code of an error
+     * @property {string} subGroupIds.failedGroups[].message The message that describes an error
+     * @property {number} createdAtTs The timestamp of a community creation
+     */
+
+    /**
+     * Options for community creation
+     * @typedef {Object} CreateCommunityOptions
+     * @property {?string} description The community description
+     * @property {?string|Array<string>} subGroupIds The single group ID or an array of group IDs to link to the created community
+     * @see https://faq.whatsapp.com/1110600769849613
+     * @property {boolean} [membershipApprovalMode = false] If true, admins must approve anyone who wants to join the group, false by default
+     * @see https://faq.whatsapp.com/205306122327447
+     * @property {boolean} [allowNonAdminSubGroupCreation = false] If false, only community admins can add groups to that community, members can suggest groups for admin approval. If true, every community member can add groups to that community. False by default
+     */
+
+    /**
+     * Creates a new community, optionally it is possible to link groups to that community within its creation
+     * @param {string} title The community title
+     * @param {CreateCommunityOptions} options 
+     * @returns {Promise<CreateCommunityResult|string>} Returns an object that handles the result for the community creation or an error message as a string
+     */
+    async createCommunity(title, options = {}) {
+        return await this.pupPage.evaluate(async (name, options = {}) => {
+            let { description: desc = '', subGroupIds = null, membershipApprovalMode: closed = true, allowNonAdminSubGroupCreation: hasAllowNonAdminSubGroupCreation = false } = options;
+            let createCommunityResult, linkingSubGroupsResult;
+
+            try {
+                createCommunityResult = await window.Store.CommunityUtils.sendCreateCommunity({
+                    name,
+                    desc,
+                    closed,
+                    hasAllowNonAdminSubGroupCreation
+                });
+            } catch (err) {
+                if (err.name === 'ServerStatusCodeError') {
+                    return 'CreateCommunityError: An error occupied while creating a community';
+                }
+                throw err;
+            }
+
+            if (subGroupIds) {
+                linkingSubGroupsResult = await window.WWebJS.linkUnlinkSubgroups(
+                    'LinkSubgroups',
+                    createCommunityResult.wid._serialized,
+                    subGroupIds
+                );
+            }
+            
+            return {
+                title: name,
+                cid: createCommunityResult.wid,
+                ...(subGroupIds ? { subGroupIds: linkingSubGroupsResult } : {}),
+                createdAtTs: createCommunityResult.ts
+            };
+        }, title, options);
+    }
+
+    /**
+     * Deactivates the community
+     * @param {string} parentGroupId The ID of a community parent group
+     * @returns {Promise<boolean>} Returns true if the operation completed successfully, false otherwise
+     */
+    async deactivateCommunity(parentGroupId) {
+        return await this.pupPage.evaluate(async (parentGroupId) => {
+            const communityWid = window.Store.WidFactory.createWid(parentGroupId);
+            try {
+                const response = await window.Store.CommunityUtils.sendDeactivateCommunity({
+                    parentGroupId: communityWid
+                });
+                return response ? true : false;
+            } catch (err) {
+                if (err.name === 'ServerStatusCodeError') return false;
+                throw err;
+            }
+        }, parentGroupId);
     }
 
     /**
@@ -1599,6 +1732,96 @@ class Client extends EventEmitter {
         }, groupId, options);
     }
 
+    /**
+     * The result of {@link getReportedMessages}
+     * @typedef {Object} ReportedMessage
+     * @property {{reporterId:{server: string, user: string, _serialized: string}, reportedAt: number}[]} reporters Users that repoted that message
+     * @property {Message} message The message that has been reported
+     */
+
+    /**
+     * Gets the reported to group admin messages sent in that group
+     * Will work if:
+     * 1. The 'Report To Admin Mode' is turned on in the group
+     * 2. The current user is an admin of that group
+     * @param {string} groupId The group ID to retrieve reported messages from
+     * @returns {Promise<ReportedMessage[]|[]>}
+     */
+    async getReportedMessages(groupId) {
+        let result = await this.client.pupPage.evaluate(async (groupId) => {
+            const groupWid = window.Store.WidFactory.createWid(groupId);
+            let response, result = [];
+
+            try {
+                response = await window.Store.GroupUtils.getReportedMsgs(groupWid);
+            } catch (err) {
+                if (err.name === 'ServerStatusCodeError') return [];
+                throw err;
+            }
+
+            for (const report of response.reportsReport) {
+                let message;
+                try {
+                    message = await (async () => {
+                        const [msgProp] = await window.Store.MessageGetter.getMsgsByMsgIdsAndChatId([report.messageId], groupWid);
+                        const msg = new window.Store.MessageGetter.Msg(window.Store.MessageGetter.messageFromDbRow(msgProp));
+                        await msg.waitForPrep();
+                        return window.WWebJS.getMessageModel(msg);
+                    })();
+                } catch (err) {
+                    continue;
+                }
+
+                const reporters = report.reporter.map((r) => ({
+                    reporterId: window.Store.JidToWid.userJidToUserWid(r.jid),
+                    reportedAt: r.timestamp,
+                }));
+
+                return result.push({
+                    reporters,
+                    message,
+                });
+            }
+        }, groupId);
+
+        return result.map(obj => ({
+            ...obj,
+            message: new Message(this, obj.message)
+        }));
+    }
+
+    /**
+     * Indicates if there are kept messages in that chat
+     * @see https://faq.whatsapp.com/728928448599090
+     * @param {string} chatId ID of the chat to check for kept messages
+     * @returns {Promise<boolean>} True if there are kept messages in a chat, false otherwise
+     */
+    async hasKeptMessages(chatId) {
+        return await this.client.pupPage.evaluate(async (chatId) => {
+            const chatWid = window.Store.WidFactory.createWid(chatId);
+            const chat = await window.Store.Chat.find(chatWid);
+            return chat.hasKeptMsgs();
+        }, chatId);
+    }
+
+    /**
+     * Gets kept messages from this chat, if any
+     * @see https://faq.whatsapp.com/728928448599090
+     * @param {string} chatId ID of the chat to get kept messages from
+     * @returns {Promise<Message[]|[]>} An array of kept messages, or an empty array if no those
+     */
+    async getKeptMessages(chatId) {
+        const result =  await this.pupPage.evaluate(async (chatId) => {
+            const chatWid = window.Store.WidFactory.createWid(chatId);
+            const chat = await window.Store.Chat.find(chatWid);
+            if (chat.isGroup) {
+                await window.Store.GroupMetadata.queryAndUpdate(chatWid);
+            }
+            return chat.getKeptMsgs().getModelsArray().map(m => window.WWebJS.getMessageModel(m));
+        }, chatId);
+
+        return result.map((m) => new Message(this, m));
+    }
 
     /**
      * Setting  autoload download audio

@@ -4,6 +4,7 @@ module.exports = {
     Chat: require('./Chat'),
     ClientInfo: require('./ClientInfo'),
     Contact: require('./Contact'),
+    Community: require('./Community'),
     GroupChat: require('./GroupChat'),
     Location: require('./Location'),
     Message: require('./Message'),
@@ -20,4 +21,5 @@ module.exports = {
     Payment: require('./Payment'),
     Reaction: require('./Reaction'),
     Poll: require('./Poll'),
+    PollVote: require('./PollVote')
 };
